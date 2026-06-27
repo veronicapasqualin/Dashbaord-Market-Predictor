@@ -91,7 +91,7 @@ def forecast_market(budget, cpc, conversion_rate, value_per_conversion):
 # -----------------------------
 # App
 # -----------------------------
-st.title("Market Expansion Forecast Dashboard")
+st.title("International Revenue Predictor Dashboard")
 
 st.caption(
     "Interactive forecasting tool to estimate clicks, conversions, revenue, CPA and ROAS by market."
