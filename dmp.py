@@ -6,7 +6,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(
-    page_title="Internationla Revenue Predictor Dashboard",
+    page_title="International Revenue Predictor Dashboard",
     layout="wide"
 )
 
@@ -25,7 +25,9 @@ data = pd.DataFrame({
     "AI Discoverability": [78, 72, 66, 70, 64, 75, 69],
 })
 
-# Demo target for regression
+# -----------------------------
+# Revenue potential model
+# -----------------------------
 data["Revenue Potential"] = (
     data["Search Volume"] * 0.00035
     + data["Intent Score"] * 0.9
@@ -57,23 +59,57 @@ X_scaled = scaler.fit_transform(X)
 model = LinearRegression()
 model.fit(X_scaled, y)
 
-data["Predicted Revenue Score"] = model.predict(X_scaled).round(1)
-
-min_score = data["Predicted Revenue Score"].min()
-max_score = data["Predicted Revenue Score"].max()
-
-data["Expansion Score"] = (
-    (data["Predicted Revenue Score"] - min_score)
-    / (max_score - min_score)
-    * 100
-).round(0)
-
 # -----------------------------
-# Forecast function
+# Helper functions
 # -----------------------------
-def forecast_market(budget, cpc, conversion_rate, value_per_conversion):
+def calculate_predictions(df):
+    scaled = scaler.transform(df[features])
+    df["Predicted Revenue Score"] = model.predict(scaled).round(1)
+
+    min_score = df["Predicted Revenue Score"].min()
+    max_score = df["Predicted Revenue Score"].max()
+
+    if max_score == min_score:
+        df["Expansion Score"] = 100
+    else:
+        df["Expansion Score"] = (
+            (df["Predicted Revenue Score"] - min_score)
+            / (max_score - min_score)
+            * 100
+        ).round(0)
+
+    return df
+
+
+def market_signal_multiplier(row):
+    """
+    Converts market signals into a practical performance multiplier.
+
+    Higher intent, trend growth, GDP, ecommerce maturity and AI discoverability improve the forecast.
+    Higher competition reduces the forecast.
+    """
+
+    competition_factor = 100 - row["Competition Index"]
+    trend_score = min(max(row["Trend Growth"] * 3, 0), 100)
+
+    signal_score = (
+        competition_factor * 0.18
+        + row["Intent Score"] * 0.22
+        + trend_score * 0.16
+        + row["GDP per Capita Index"] * 0.14
+        + row["Ecommerce Maturity"] * 0.15
+        + row["AI Discoverability"] * 0.15
+    )
+
+    # Converts score into a multiplier between 0.5 and 1.5
+    return 0.5 + (signal_score / 100)
+
+
+def forecast_market(budget, cpc, conversion_rate, value_per_conversion, multiplier=1):
+    adjusted_conversion_rate = conversion_rate * multiplier
+
     clicks = int(budget / cpc) if cpc > 0 else 0
-    conversions = clicks * (conversion_rate / 100)
+    conversions = clicks * (adjusted_conversion_rate / 100)
     revenue = conversions * value_per_conversion
     cpa = budget / conversions if conversions > 0 else float("inf")
     roas = revenue / budget if budget > 0 else 0
@@ -81,12 +117,14 @@ def forecast_market(budget, cpc, conversion_rate, value_per_conversion):
 
     return {
         "clicks": clicks,
+        "adjusted_conversion_rate": adjusted_conversion_rate,
         "conversions": conversions,
         "revenue": revenue,
         "cpa": cpa,
         "roas": roas,
         "profit": profit,
     }
+
 
 # -----------------------------
 # App
@@ -130,7 +168,7 @@ cpc = st.sidebar.number_input(
 )
 
 conversion_rate = st.sidebar.number_input(
-    "Expected Conversion Rate (%)",
+    "Base Conversion Rate (%)",
     min_value=0.0,
     max_value=100.0,
     value=3.0,
@@ -195,28 +233,45 @@ ai_discoverability = st.sidebar.slider(
 )
 
 # -----------------------------
-# Custom prediction
+# Update selected market with custom inputs
 # -----------------------------
-custom_input = pd.DataFrame([{
-    "Search Volume": search_volume,
-    "CPC": cpc,
-    "Competition Index": competition,
-    "Intent Score": intent,
-    "Trend Growth": trend_growth,
-    "GDP per Capita Index": gdp_index,
-    "Ecommerce Maturity": ecommerce,
-    "AI Discoverability": ai_discoverability,
-}])
+adjusted_data = data.copy()
 
-custom_scaled = scaler.transform(custom_input)
-predicted_revenue_score = model.predict(custom_scaled)[0]
+adjusted_data.loc[adjusted_data["Market"] == selected_market, [
+    "Search Volume",
+    "CPC",
+    "Competition Index",
+    "Intent Score",
+    "Trend Growth",
+    "GDP per Capita Index",
+    "Ecommerce Maturity",
+    "AI Discoverability",
+]] = [
+    search_volume,
+    cpc,
+    competition,
+    intent,
+    trend_growth,
+    gdp_index,
+    ecommerce,
+    ai_discoverability,
+]
+
+adjusted_data = calculate_predictions(adjusted_data)
+
+selected_row = adjusted_data[adjusted_data["Market"] == selected_market].iloc[0]
+
+market_multiplier = market_signal_multiplier(selected_row)
 
 forecast = forecast_market(
     budget,
     cpc,
     conversion_rate,
-    value_per_conversion
+    value_per_conversion,
+    market_multiplier
 )
+
+predicted_revenue_score = selected_row["Predicted Revenue Score"]
 
 # -----------------------------
 # Main KPIs
@@ -237,6 +292,11 @@ c6.metric("CPA", "∞" if math.isinf(forecast["cpa"]) else f"£{forecast['cpa']:
 c7.metric("ROAS", f"{forecast['roas']:.2f}")
 c8.metric("Profit", f"£{forecast['profit']:,.0f}")
 
+st.caption(
+    f"Market signal multiplier applied to conversion rate: **{market_multiplier:.2f}x** | "
+    f"Adjusted conversion rate: **{forecast['adjusted_conversion_rate']:.2f}%**"
+)
+
 # -----------------------------
 # Recommendation
 # -----------------------------
@@ -245,26 +305,31 @@ st.header("Strategic Interpretation")
 insights = []
 
 if forecast["roas"] >= 3:
-    insights.append(f"**{selected_market}** looks commercially attractive based on the current budget and conversion assumptions.")
+    insights.append(f"**{selected_market}** looks commercially attractive based on the current budget and market signals.")
 elif forecast["roas"] >= 1.5:
-    insights.append(f"**{selected_market}** shows potential, but performance would depend on optimisation and market validation.")
+    insights.append(f"**{selected_market}** shows potential, but performance would depend on optimisation and validation.")
 else:
-    insights.append(f"**{selected_market}** may be risky under the current assumptions. Budget, CPC or conversion rate would need improvement.")
+    insights.append(f"**{selected_market}** may be risky under the current assumptions.")
 
-if cpc < data["CPC"].mean():
-    insights.append("- CPC is below the benchmark market average, suggesting more efficient traffic acquisition.")
+if cpc < adjusted_data["CPC"].mean():
+    insights.append("- CPC is below the benchmark market average, suggesting more efficient acquisition.")
 else:
     insights.append("- CPC is above the benchmark market average, so acquisition efficiency may be more challenging.")
 
-if trend_growth > data["Trend Growth"].mean():
+if trend_growth > adjusted_data["Trend Growth"].mean():
     insights.append("- Search trend growth is above average, suggesting positive demand momentum.")
 else:
     insights.append("- Search trend growth is below average, suggesting slower market momentum.")
 
-if competition < data["Competition Index"].mean():
+if competition < adjusted_data["Competition Index"].mean():
     insights.append("- Competition intensity is below average, which may make market entry easier.")
 else:
     insights.append("- Competition intensity is above average, so differentiation and strong execution would be important.")
+
+if ai_discoverability > adjusted_data["AI Discoverability"].mean():
+    insights.append("- AI discoverability is above average, which may improve visibility across emerging search journeys.")
+else:
+    insights.append("- AI discoverability is below average, suggesting a need for stronger entity visibility and structured content.")
 
 st.success("\n\n".join(insights))
 
@@ -273,7 +338,7 @@ st.success("\n\n".join(insights))
 # -----------------------------
 st.header("Benchmark Market Ranking")
 
-ranking = data.sort_values("Expansion Score", ascending=False)[[
+ranking = adjusted_data.sort_values("Expansion Score", ascending=False)[[
     "Market",
     "Expansion Score",
     "Predicted Revenue Score",
@@ -294,18 +359,23 @@ st.header("Budget Forecast Across Markets")
 
 comparison_rows = []
 
-for _, row in data.iterrows():
+for _, row in adjusted_data.iterrows():
+    row_multiplier = market_signal_multiplier(row)
+
     result = forecast_market(
         budget,
         row["CPC"],
         conversion_rate,
-        value_per_conversion
+        value_per_conversion,
+        row_multiplier
     )
 
     comparison_rows.append({
         "Market": row["Market"],
         "Budget (£)": budget,
         "CPC (£)": row["CPC"],
+        "Market Signal Multiplier": round(row_multiplier, 2),
+        "Adjusted Conversion Rate (%)": round(result["adjusted_conversion_rate"], 2),
         "Estimated Clicks": result["clicks"],
         "Estimated Conversions": round(result["conversions"], 1),
         "Revenue (£)": round(result["revenue"], 0),
@@ -338,6 +408,13 @@ plt.ylabel("ROAS")
 plt.title("Estimated ROAS by Market")
 st.pyplot(fig2)
 
+fig3 = plt.figure()
+plt.bar(comparison_df["Market"], comparison_df["Market Signal Multiplier"])
+plt.xticks(rotation=45)
+plt.ylabel("Multiplier")
+plt.title("Market Signal Multiplier by Market")
+st.pyplot(fig3)
+
 # -----------------------------
 # Methodology
 # -----------------------------
@@ -345,13 +422,18 @@ st.header("Methodology")
 
 st.write(
     """
-    This dashboard combines two layers:
+    This dashboard combines three layers:
 
     **1. Market expansion prediction**  
     A linear regression model estimates market revenue potential using search demand, CPC, competition,
     purchase intent, growth, economic maturity, ecommerce maturity and AI discoverability.
 
-    **2. Budget forecast simulation**  
+    **2. Market signal adjustment**  
+    User-defined market signals are converted into a performance multiplier. Stronger purchase intent,
+    trend growth, ecommerce maturity, GDP index and AI discoverability increase the forecast. Higher
+    competition reduces it.
+
+    **3. Budget forecast simulation**  
     The dashboard estimates clicks, conversions, revenue, CPA, ROAS and profit from user-defined budget,
     CPC, conversion rate and value-per-conversion assumptions.
 
